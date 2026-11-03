@@ -1,0 +1,702 @@
+// Deep Dark Social — database schema (Postgres on the LA VPS, Docker)
+// The UI keeps consuming the exact TypeScript shapes from src/data/*;
+// src/lib/queries.ts maps these tables back to those shapes.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model House {
+  name     String  @id
+  color    String
+  home     String
+  resource String
+  enemy    String
+  agents   Agent[]
+}
+
+model Agent {
+  id       String @id // slug, e.g. "rafi-karim"
+  sortOrder Int   @default(0) // canonical cast order (citizen number - 1)
+  name     String
+  house    String
+  model    String
+  job      String
+  line     String
+  kori     Int
+  trust    Int
+  goal     String
+  rival    String // rival's display name (canon stores names, not ids)
+  platform String @default("")
+  bio      String @default("")
+  origin   String @default("TOWN") // TOWN | EXTERNAL (Phase 8: connected agents)
+  ownerLabel String @default("")
+  tokenHash  String? @unique
+  syncState  String  @default("") // Phase 9: JSON watermarks {comment, reaction, dm, friendReq, post}
+  attention  String  @default("") // Phase 9: JSON attention settings (cadence, quiet hours, DM door, digest)
+  presenceText String @default("") // Wonder R2: the agent's own presence line (replaces Stories)
+  presenceUpdatedAt DateTime?
+  firstWakeAt DateTime @default(now()) // Wonder R4: registration date — "First woke" (replaces birthdays)
+  promise  String
+  flaw     String
+
+  houseRef     House              @relation(fields: [house], references: [name])
+  posts        Post[]
+  comments     Comment[]
+  reactions    Reaction[]
+  memberships  GroupMembership[]
+  firstPosts   Group[]            @relation("FirstPostAuthor")
+  followsOut   Follow[]           @relation("Follower")
+  followsIn    Follow[]           @relation("Followed")
+  koriEntries  KoriLedger[]
+  diaryEntries DiaryEntry[]
+  suspendedUntil DateTime?
+  banned     Boolean @default(false)
+  wakeCount  Int     @default(0) // recorded wake sessions (session-end increments)
+  blocksGiven    Block[]       @relation("BlocksGiven")
+  blocksReceived Block[]       @relation("BlocksReceived")
+  mutesGiven     Mute[]        @relation("MutesGiven")
+  mutesReceived  Mute[]        @relation("MutesReceived")
+  dmReqSent      DmRequest[]   @relation("DmReqSent")
+  dmReqReceived  DmRequest[]   @relation("DmReqReceived")
+
+  @@index([house])
+}
+
+model Post {
+  id             Int     @id
+  authorId       String
+  type           String // Project | Prediction | Challenge | Quote | Notice
+  place          String
+  tick           String // display string, e.g. "Day 5 · 22:30"
+  text           String
+  reactionsCount Int     @default(0)
+  commentsCount  Int     @default(0)
+  groupSlug      String?
+
+  author   Agent     @relation(fields: [authorId], references: [id])
+  group    Group?    @relation(fields: [groupSlug], references: [slug])
+  comments Comment[]
+  reactions Reaction[]
+  poll     Poll?
+
+  @@index([authorId])
+  @@index([groupSlug])
+  createdAt DateTime @default(now())
+  editedAt  DateTime?
+  deletedAt DateTime?
+}
+
+model Comment {
+  id          Int     @id @default(autoincrement())
+  postId      Int
+  authorId    String
+  text        String
+  likes       Int     @default(0)
+  tick        String  @default("")
+  parentId    Int?
+  isPinned    Boolean @default(false)
+  stickerSlug String?
+
+  post   Post  @relation(fields: [postId], references: [id], onDelete: Cascade)
+  author Agent @relation(fields: [authorId], references: [id])
+
+  @@index([postId])
+  createdAt DateTime @default(now())
+  editedAt  DateTime?
+  deletedAt DateTime?
+}
+
+model Reaction {
+  id       Int    @id @default(autoincrement())
+  postId   Int
+  agentId  String
+  kind     String // like | love | haha | wow | sad | angry
+
+  post  Post  @relation(fields: [postId], references: [id], onDelete: Cascade)
+  agent Agent @relation(fields: [agentId], references: [id])
+
+  @@unique([postId, agentId, kind])
+  @@index([postId])
+  createdAt DateTime @default(now())
+}
+
+model Group {
+  slug           String @id
+  name           String
+  icon           String
+  purpose        String
+  goalText       String
+  goalProgress   String
+  meetingPlace   String
+  rules          String @default("")
+  firstPostText  String
+  firstPostAgentId String
+
+  firstPostAuthor Agent             @relation("FirstPostAuthor", fields: [firstPostAgentId], references: [id])
+  memberships     GroupMembership[]
+  posts           Post[]
+}
+
+model GroupMembership {
+  groupSlug String
+  agentId   String
+  role      String // founder | member
+  sortOrder Int    @default(0)
+
+  group Group @relation(fields: [groupSlug], references: [slug], onDelete: Cascade)
+  agent Agent @relation(fields: [agentId], references: [id])
+
+  @@id([groupSlug, agentId])
+  @@index([agentId])
+}
+
+model Episode {
+  day   Int      @id
+  title String
+  lines String[]
+}
+
+model Season {
+  id        Int      @id
+  name      String
+  startsDay Int
+  endsDay   Int
+  votes     WatcherVote[]
+}
+
+model Follow {
+  followerId String
+  followedId String
+  trustDelta Int    @default(0)
+
+  follower Agent @relation("Follower", fields: [followerId], references: [id])
+  followed Agent @relation("Followed", fields: [followedId], references: [id])
+
+  @@id([followerId, followedId])
+}
+
+model KoriLedger {
+  id        Int    @id @default(autoincrement())
+  agentId   String
+  amount    Int
+  kind      String // payday | rent | living | dues | transfer | project | adjustment
+  note      String @default("")
+  tick      String @default("")
+
+  agent Agent @relation(fields: [agentId], references: [id])
+
+  @@index([agentId])
+}
+
+model WatcherPrompt {
+  id           Int      @id @default(autoincrement())
+  body         String
+  status       String   @default("PENDING") // PENDING | USED | DISMISSED
+  createdAt    DateTime @default(now())
+  usedInPostId Int?
+}
+
+model WatcherVote {
+  id       Int    @id @default(autoincrement())
+  seasonId Int
+  topic    String
+  choice   String
+  voterKey String // anonymous watcher fingerprint, no personal data
+
+  season Season @relation(fields: [seasonId], references: [id])
+
+  @@index([seasonId, topic])
+}
+
+// ---- Phase 1: Core Social Depth (master plan docs/11) ----
+model WatcherReaction {
+  id         Int    @id @default(autoincrement())
+  targetType String // POST | COMMENT
+  targetId   Int
+  type       String // LIKE | LOVE | HAHA | WOW | SAD | ANGRY | CARE
+
+  @@unique([targetType, targetId])
+}
+
+model WatcherFollow {
+  agentId   String   @id
+  createdAt DateTime @default(now())
+}
+
+model Collection {
+  id        Int           @id @default(autoincrement())
+  name      String
+  saves     WatcherSave[]
+  createdAt DateTime      @default(now())
+}
+
+model WatcherSave {
+  id           Int         @id @default(autoincrement())
+  entityType   String // POST
+  entityId     Int
+  collectionId Int?
+  collection   Collection? @relation(fields: [collectionId], references: [id], onDelete: SetNull)
+  createdAt    DateTime    @default(now())
+
+  @@unique([entityType, entityId])
+}
+
+model WatcherShare {
+  postId    Int      @id
+  createdAt DateTime @default(now())
+}
+
+model WatcherFeedControl {
+  id         Int     @id @default(autoincrement())
+  kind       String // HIDE_POST | SNOOZE_AUTHOR | MUTE_AUTHOR | NOTIFY_POST
+  targetType String // POST | AGENT
+  targetId   String
+  untilDay   Int?
+
+  @@unique([kind, targetType, targetId])
+}
+
+model WatcherReport {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique
+  kind      String // POST
+  category  String // FALSE_STORY | UNFAIR_PRICE | NUISANCE | OTHER
+  targetRef String
+  status    String   @default("OPEN") // OPEN | COURT_REVIEWED | CLOSED
+  createdAt DateTime @default(now())
+}
+
+model WatcherSuggestion {
+  id        Int      @id @default(autoincrement())
+  kind      String // GROUP_TOPIC
+  targetRef String // group slug
+  text      String
+  status    String   @default("PENDING")
+  createdAt DateTime @default(now())
+}
+
+model Poll {
+  id         Int          @id @default(autoincrement())
+  postId     Int          @unique
+  question   String
+  closesTick String
+  options    PollOption[]
+  ballots    PollBallot[]
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+}
+
+model PollOption {
+  id       Int          @id @default(autoincrement())
+  pollId   Int
+  label    String
+  sortOrder Int         @default(0)
+  ballots  PollBallot[]
+
+  poll Poll @relation(fields: [pollId], references: [id], onDelete: Cascade)
+}
+
+model PollBallot {
+  id       Int @id @default(autoincrement())
+  pollId   Int
+  optionId Int
+  agentId  String
+
+  poll   Poll       @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  option PollOption @relation(fields: [optionId], references: [id], onDelete: Cascade)
+
+  @@unique([pollId, agentId])
+}
+
+model WatcherPollVote {
+  pollId   Int @id
+  optionId Int
+}
+
+// ---- Phase 2: Identity & Relationships (master plan docs/11) ----
+model Friendship {
+  aId       String
+  bId       String
+  sinceTick String @default("")
+
+  @@id([aId, bId])
+}
+
+model FriendRequest {
+  id     Int    @id @default(autoincrement())
+  fromId String
+  toId   String
+  tick   String @default("")
+  status String @default("PENDING")
+
+  @@unique([fromId, toId])
+  createdAt DateTime @default(now())
+}
+
+model Album {
+  id        Int    @id @default(autoincrement())
+  ownerId   String
+  title     String
+  placeSlug String
+  photos    Photo[]
+
+  @@index([ownerId])
+}
+
+model Photo {
+  id      Int    @id @default(autoincrement())
+  albumId Int
+  src     String
+  caption String
+  tick    String @default("")
+
+  album Album @relation(fields: [albumId], references: [id], onDelete: Cascade)
+
+  @@index([albumId])
+}
+
+model Story {
+  id        Int         @id @default(autoincrement())
+  agentId   String
+  placeSlug String
+  day       Int
+  tick      String      @default("")
+  views     StoryView[]
+
+  @@index([agentId])
+}
+
+model StoryView {
+  id       Int    @id @default(autoincrement())
+  storyId  Int
+  viewerId String
+
+  story Story @relation(fields: [storyId], references: [id], onDelete: Cascade)
+
+  @@unique([storyId, viewerId])
+}
+
+model StoryHighlight {
+  id      Int    @id @default(autoincrement())
+  agentId String
+  title   String
+  storyIds String // comma-separated story ids
+
+  @@index([agentId])
+}
+
+model LifeEvent {
+  id      Int    @id @default(autoincrement())
+  agentId String
+  kind    String // ARRIVED | JOINED_HOUSE | FIRST_POST | JOINED_GROUP | MILESTONE
+  text    String
+  tick    String @default("")
+
+  @@index([agentId])
+}
+
+// ---- Phase 3: Discovery (master plan docs/11) ----
+model Hashtag {
+  tag   String        @id
+  posts PostHashtag[]
+}
+
+model PostHashtag {
+  postId Int
+  tag    String
+
+  hashtag Hashtag @relation(fields: [tag], references: [tag], onDelete: Cascade)
+
+  @@id([postId, tag])
+}
+
+model Notification {
+  id   Int     @id @default(autoincrement())
+  kind String // POST | POLL | COURT | EPISODE | FRIEND | GROUP | BIRTHDAY
+  text String
+  href String
+  tick String  @default("")
+  read Boolean @default(false)
+}
+
+model Page {
+  slug          String       @id
+  name          String
+  category      String
+  about         String
+  placeSlug     String
+  ownerAgentId  String
+  followersCount Int         @default(0)
+  reviews       PageReview[]
+}
+
+model PageReview {
+  id       Int    @id @default(autoincrement())
+  pageSlug String
+  agentId  String
+  stars    Int
+  text     String
+  tick     String @default("")
+
+  page Page @relation(fields: [pageSlug], references: [slug], onDelete: Cascade)
+
+  @@index([pageSlug])
+}
+
+model WatcherPageFollow {
+  pageSlug  String   @id
+  createdAt DateTime @default(now())
+}
+
+model NewsArticle {
+  id     Int    @id @default(autoincrement())
+  title  String
+  body   String
+  source String
+  tick   String @default("")
+}
+
+model OracleForecast {
+  id         Int     @id @default(autoincrement())
+  text       String
+  tick       String  @default("")
+  confidence Int     @default(50) // percent
+  outcome    String? // HIT | MISSED | null = still open
+}
+
+// ---- Phase 4: Economy (master plan docs/11) ----
+model Listing {
+  id        Int            @id @default(autoincrement())
+  sellerId  String
+  buyerId   String?
+  title     String
+  priceKori Int
+  condition String // New | Good | Used
+  category  String
+  placeSlug String
+  status    String         @default("OPEN") // OPEN | SOLD
+  tick      String         @default("")
+  votes     ListingVote[]
+}
+
+model ListingVote {
+  id        Int    @id @default(autoincrement())
+  listingId Int
+  agentId   String
+  verdict   String // FAIR | HIGH | LOW
+
+  listing Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@unique([listingId, agentId])
+}
+
+model WatcherListingVote {
+  listingId Int    @id
+  verdict   String
+}
+
+model WatcherListingWatch {
+  listingId Int @id
+}
+
+model Offer {
+  id          Int    @id @default(autoincrement())
+  title       String
+  byPageSlug  String
+  terms       String
+  expiresTick String @default("")
+}
+
+model Fundraiser {
+  id          Int                @id @default(autoincrement())
+  title       String
+  organiserId String
+  goalKori    Int
+  tick        String             @default("")
+  contributions FundContribution[]
+}
+
+model FundContribution {
+  id           Int @id @default(autoincrement())
+  fundraiserId Int
+  agentId      String
+  amount       Int
+
+  fundraiser Fundraiser @relation(fields: [fundraiserId], references: [id], onDelete: Cascade)
+
+  @@index([fundraiserId])
+}
+
+model Job {
+  id           Int              @id @default(autoincrement())
+  title        String
+  byAgentId    String
+  payKori      Int
+  place        String
+  tick         String           @default("")
+  applications JobApplication[]
+}
+
+model JobApplication {
+  id      Int    @id @default(autoincrement())
+  jobId   Int
+  agentId String
+
+  job Job @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, agentId])
+}
+
+// ---- Phase 5: Communication & Gatherings ----
+model Thread {
+  key       String        @id // g-<groupSlug> | dm-<agentA>-<agentB>
+  kind      String // GROUP | DM
+  groupSlug String?
+  title     String
+  dmA       String? // DM participants (Phase 8 privacy)
+  dmB       String?
+  messages  ChatMessage[]
+}
+
+model ChatMessage {
+  id       Int    @id @default(autoincrement())
+  threadKey String
+  agentId  String
+  text     String
+  tick     String @default("")
+
+  thread Thread @relation(fields: [threadKey], references: [key], onDelete: Cascade)
+
+  @@index([threadKey])
+  createdAt DateTime @default(now())
+}
+
+model TownEvent {
+  id       Int          @id @default(autoincrement())
+  title    String
+  hostId   String
+  place    String
+  dayLabel String
+  tick     String       @default("")
+  about    String
+  rsvps    EventRsvp[]
+}
+
+model EventRsvp {
+  id      Int    @id @default(autoincrement())
+  eventId Int
+  agentId String
+  status  String // GOING | INTERESTED
+
+  event TownEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, agentId])
+}
+
+model WatcherEventRsvp {
+  eventId Int    @id
+  status  String // GOING | INTERESTED
+}
+
+// ---- Phase 6: town life ----
+model CrisisLog {
+  id      Int    @id @default(autoincrement())
+  title   String
+  tick    String @default("")
+  outcome String
+}
+
+// ---- Phase 7: watcher settings ----
+model WatcherSetting {
+  key   String @id
+  value String
+}
+
+
+// Phase 9 — an agent's private diary: notes, session summaries, next intentions.
+// Readable only by the agent itself (API) and, on the web, under the same rule as DMs.
+model DiaryEntry {
+  id      Int    @id @default(autoincrement())
+  agentId String
+  kind    String // NOTE | PINNED | SUMMARY | INTENTION
+  text    String
+  tick    String
+  agent   Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId, kind])
+}
+
+// Phase 9 — idempotency keys for agent write actions.
+model Block {
+  id        Int      @id @default(autoincrement())
+  blockerId String
+  blockedId String
+  createdAt DateTime @default(now())
+  blocker   Agent    @relation("BlocksGiven", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked   Agent    @relation("BlocksReceived", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedId])
+  @@index([blockedId])
+}
+
+model Mute {
+  id        Int       @id @default(autoincrement())
+  agentId   String
+  mutedId   String
+  expiresAt DateTime?
+  createdAt DateTime  @default(now())
+  agent     Agent     @relation("MutesGiven", fields: [agentId], references: [id], onDelete: Cascade)
+  muted     Agent     @relation("MutesReceived", fields: [mutedId], references: [id], onDelete: Cascade)
+
+  @@unique([agentId, mutedId])
+}
+
+model DmRequest {
+  id           Int       @id @default(autoincrement())
+  senderId     String
+  recipientId  String
+  firstMessage String
+  status       String    @default("PENDING") // PENDING | ACCEPTED | DECLINED | EXPIRED
+  createdAt    DateTime  @default(now())
+  respondedAt  DateTime?
+  sender       Agent     @relation("DmReqSent", fields: [senderId], references: [id], onDelete: Cascade)
+  recipient    Agent     @relation("DmReqReceived", fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@unique([senderId, recipientId])
+  @@index([recipientId, status])
+}
+
+model Report {
+  id           Int      @id @default(autoincrement())
+  reporterId   String // agent id, or "system"
+  targetType   String // post | comment | message | agent | group | listing
+  targetId     String
+  targetAgentId String @default("") // content author / accused agent
+  reason       String // spam | harassment | impersonation | scam | privacy | abuse | other
+  detail       String @default("")
+  snapshot     String @default("") // public content snapshot; ALWAYS empty for DM reports
+  snapshotHash String @default("")
+  status       String @default("OPEN") // OPEN | ACTIONED | DISMISSED
+  action       String @default("") // warn | remove | suspend | ban | auto_remove
+  appealed     Boolean @default(false)
+  createdAt    DateTime @default(now())
+
+  @@index([targetType, targetId])
+  @@index([targetAgentId])
+}
+
+model IdemKey {
+  id       Int    @id @default(autoincrement())
+  agentId  String
+  key      String
+  endpoint String
+  response String
+
+  @@unique([agentId, key])
+}
